@@ -1,0 +1,385 @@
+#pragma once
+#include <cstring>
+#include <optional>
+#include <string>
+
+#define MAX_BUF_SIZE 64
+
+namespace nmsl {
+using namespace std::string_literals;
+struct broken_format : std::exception {
+  size_t index;
+  broken_format(size_t index) noexcept : index(index) {}
+};
+struct broken_utf8 : broken_format {
+  broken_utf8(size_t index) noexcept : broken_format(index) {}
+  const char *what() const noexcept override {
+    return "utf8 bad formatted at "s.append(std::to_string(index)).c_str();
+  }
+};
+struct broken_utf32 : broken_format {
+  broken_utf32(size_t index) noexcept : broken_format(index) {}
+  const char *what() const noexcept override {
+    return "utf32 bad formatted at "s.append(std::to_string(index)).c_str();
+  }
+};
+
+template <typename T>
+  requires requires(T it) {
+    { *it };
+    { ++it };
+    { it != std::declval<T>() };
+  }
+struct nextable_itor {
+  T begin, end;
+  std::optional<std::remove_reference_t<decltype(*std::declval<T>())>>
+  next() noexcept {
+    if (begin != end)
+      return *begin++;
+    else
+      return std::nullopt;
+  }
+};
+/**
+ *  @param count Number of UTF-32 characters to be write
+ *  @return Number of UTF-8 characters read
+ */
+template <typename I, typename S>
+  requires std::forward_iterator<I> &&
+           std::is_convertible_v<decltype(*std::declval<I>()), const char8_t> &&
+           requires(S s) {
+             { s.push_back(std::declval<char32_t>()) };
+           }
+size_t from_u8(I from, I end, S &container, size_t count = -1) {
+  return from_u8(nextable_itor<I>{from, end}, container, count);
+}
+template <typename T>
+  requires std::same_as<T, std::remove_all_extents_t<T>>
+struct pointer_container_wrapper {
+  T *p;
+  pointer_container_wrapper<T> &push_back(const T &x) noexcept {
+    *p++ = x;
+    return *this;
+  }
+};
+/**
+ *  @return Number of UTF-8 characters read
+ */
+template <typename I>
+  requires std::forward_iterator<I> &&
+           std::is_convertible_v<decltype(*std::declval<I>()), const char8_t>
+size_t from_u8(I from, I end, char32_t *dst, size_t len) {
+  auto pcon = pointer_container_wrapper<char32_t>{dst};
+  return from_u8(nextable_itor<I>{from, end}, pcon, len);
+}
+/**
+ *  @param count Number of UTF-32 characters to be read
+ *  @return Number of UTF-8 characters written
+ */
+template <typename I, typename S>
+  requires std::forward_iterator<I> &&
+           std::is_convertible_v<decltype(*std::declval<I>()), const char8_t> &&
+           requires(S s) {
+             { s.push_back(std::declval<char8_t>()) };
+           }
+size_t to_u8(I from, I end, S &container, size_t count = -1) {
+  return to_u8(nextable_itor<I>{from, end}, container, count);
+}
+#define read_one(name)                                                         \
+  auto t = src.next();                                                         \
+  if (!t)                                                                      \
+    break;                                                                     \
+  auto name = *t
+template <typename T>
+inline std::remove_reference_t<decltype(*std::declval<T>().next())>
+read_one_f(T &src, size_t ncast) {
+  auto t = src.next();
+  if (!t)
+    throw broken_utf8(ncast);
+  return *t;
+}
+#define check10__(c)                                                           \
+  if (c & 0b01000000)                                                          \
+    throw broken_utf8(ncast);                                                  \
+  c &= 0b00111111
+template <typename T, typename S>
+size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
+  // since there is no way to determine endian in preprocessor stage,
+  // big endian is abandoned for performance.
+  size_t u8_n = 0;
+  for (size_t ncast = 0; ncast != count; ++ncast) {
+    read_one(cur);
+    ++u8_n;
+    if (cur < 0b10000000) {
+      dst.push_back(cur & 0b01111111);
+      continue;
+    }
+    char8_t sec = read_one_f(src, ncast);
+    check10__(sec);
+    ++u8_n;
+    if (cur < 0b11100000) {
+      dst.push_back((cur & 0b00011111) << 6 | sec);
+      continue;
+    }
+    char8_t trd = read_one_f(src, ncast);
+    check10__(trd);
+    ++u8_n;
+    if (cur < 0b11110000) {
+      dst.push_back((cur & 0b00001111) << 12 | sec << 6 | trd);
+      continue;
+    }
+    char8_t fth = read_one_f(src, ncast);
+    check10__(fth);
+    ++u8_n;
+    if (cur < 0b11111000) {
+      dst.push_back((cur & 0b00000111) << 18 | sec << 12 | trd << 6 | fth);
+      continue;
+    }
+    throw broken_utf8(ncast);
+  }
+  return u8_n;
+}
+template <typename T, typename S>
+size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
+  // since there is no way to determine endian in preprocessor stage,
+  // big endian is abandoned for performance.
+  size_t ret = 0;
+  for (size_t ncast = 0; ncast != count; ++ncast) {
+    read_one(cur);
+    if (cur < 1 << 7) {
+      dst.push_back(cur);
+      ++ret;
+      continue;
+    }
+    char8_t sec = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 5) {
+      dst.push_back(0b11000000 | cur);
+      dst.push_back(sec);
+      ret += 2;
+      continue;
+    }
+    char8_t trd = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 4) {
+      dst.push_back(0b11100000 | cur);
+      dst.push_back(trd);
+      dst.push_back(sec);
+      ret += 3;
+      continue;
+    }
+    char8_t fth = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 3) {
+      dst.push_back(0b11110000 | cur);
+      dst.push_back(fth);
+      dst.push_back(trd);
+      dst.push_back(sec);
+      ret += 4;
+      continue;
+    } else
+      throw broken_utf32(ncast);
+  }
+  return ret;
+}
+
+struct stru {
+  std::u8string s;
+  template <typename... Ts> stru(Ts &&...args) : s(std::forward<Ts>(args)...) {}
+  operator std::u8string() const noexcept { return s; }
+  template <typename... Ts> stru &append(Ts &&...args) noexcept {
+    s.append(std::forward<Ts>(args)...);
+    return *this;
+  }
+  template <typename... Ts> stru &push_back(Ts &&...args) noexcept {
+    s.push_back(std::forward<Ts>(args)...);
+    return *this;
+  }
+  class u8str_itor {
+  public:
+    constexpr u8str_itor(const u8str_itor &x) noexcept {
+      begin = x.begin;
+      vernier = x.vernier;
+      it = x.it;
+      end = x.end;
+      buf_size = x.buf_size;
+      if (x.buf_size <= 0)
+        return;
+      buf = new char32_t[buf_size];
+      std::memcpy(buf, x.buf, buf_size * sizeof(char32_t));
+    }
+    constexpr u8str_itor(u8str_itor &&x) noexcept = default;
+    constexpr u8str_itor &operator=(const u8str_itor &x) noexcept {
+      del_buf();
+      it = x.it, end = x.end, begin = x.begin, vernier = x.vernier,
+      buf_size = x.buf_size;
+      if (x.buf_size <= 0)
+        return *this;
+      buf = new char32_t[buf_size];
+      std::memcpy(buf, x.buf, buf_size * sizeof(char32_t));
+      return *this;
+    }
+    constexpr u8str_itor &operator=(u8str_itor &&x) noexcept {
+      del_buf();
+      it = x.it, begin = x.begin, end = x.end, buf = x.buf, vernier = x.vernier,
+      buf_size = x.buf_size;
+      return *this;
+    }
+    // to get cend(), pass from s.size()
+    constexpr u8str_itor(const std::u8string &s, size_t from = 0) noexcept
+        : it(s.data() + from), end(s.data() + s.size()), begin(s.data()) {
+      buffing();
+    }
+
+  private:
+    constexpr void del_buf() noexcept {
+      if (buf_size > 0)
+        delete[] buf;
+    }
+
+  public:
+    constexpr ~u8str_itor() noexcept { del_buf(); }
+    constexpr char32_t operator*() const noexcept { return buf[vernier]; }
+    constexpr u8str_itor &operator++() {
+      if (buf_size > 0 && ++vernier == buf_size) {
+        vernier = 0;
+        delete[] buf;
+        buffing();
+      }
+      return *this;
+    }
+    constexpr u8str_itor operator++(int) {
+      auto t = *this;
+      ++*this;
+      return t;
+    }
+    constexpr bool operator==(const u8str_itor &x) const noexcept {
+      return it == x.it && vernier == x.vernier;
+    }
+    constexpr bool operator!=(const u8str_itor &x) const noexcept {
+      return it != x.it || vernier != x.vernier;
+    }
+    constexpr bool operator<(const u8str_itor &x) const noexcept {
+      return it < x.it || vernier < x.vernier;
+    }
+    constexpr bool operator>(const u8str_itor &x) const noexcept {
+      return it > x.it || vernier > x.vernier;
+    }
+    constexpr bool operator<=(const u8str_itor &x) const noexcept {
+      return it <= x.it || vernier <= x.vernier;
+    }
+    constexpr bool operator>=(const u8str_itor &x) const noexcept {
+      return it >= x.it || vernier >= x.vernier;
+    }
+
+  private:
+    const char8_t *it, *end, *begin;
+    char32_t *buf /*default 64*/;
+    size_t vernier /*for buf*/ = 0, buf_size;
+    constexpr void buffing() {
+      buf_size =
+          std::min(end - it, static_cast<decltype(end - it)>(MAX_BUF_SIZE));
+      if (buf_size <= 0)
+        return;
+      buf = new char32_t[buf_size];
+      try {
+        it += from_u8(it, end, buf, buf_size);
+      } catch (broken_utf8 &e) {
+        e.index += it - begin;
+        throw e;
+      }
+    }
+  };
+  u8str_itor begin() const noexcept { return u8str_itor(s); }
+  u8str_itor end() const noexcept { return u8str_itor(s, s.size()); }
+
+  class recons_itor;
+  auto reconstruct() noexcept;
+};
+inline stru operator"" _s(const char8_t *str, size_t len) noexcept {
+  return stru(str, len);
+}
+inline std::basic_ostream<char8_t> &&operator<<(std::basic_ostream<char8_t> &os,
+                                                const stru &s) noexcept {
+  return std::move(os << s.s);
+}
+
+class stru::recons_itor {
+  stru *s;
+  stru *old;
+  std::optional<decltype(std::declval<stru>().begin())> oit, oend;
+  char32_t *buf;
+  size_t vernier = 0, buf_size;
+  constexpr void del_buf() noexcept {
+    if (buf_size > 0)
+      delete[] buf;
+    if (old)
+      delete old;
+  }
+
+public:
+  constexpr ~recons_itor() noexcept { del_buf(); }
+  constexpr recons_itor(const recons_itor &x) noexcept {
+    s = x.s;
+    vernier = x.vernier;
+    if (x.old) {
+      old = x.old;
+      oit = *x.oit;
+      oend = *x.oend;
+    }
+    buf_size = x.buf_size;
+    if (x.buf_size <= 0)
+      return;
+    buf = new char32_t[buf_size];
+    std::memcpy(buf, x.buf, buf_size * sizeof(char32_t));
+  }
+  constexpr recons_itor(recons_itor &&x) noexcept = default;
+  constexpr recons_itor &operator=(const recons_itor &x) noexcept {
+    del_buf();
+    s = x.s;
+    vernier = x.vernier;
+    if (x.old) {
+      old = x.old;
+      oit = *x.oit;
+      oend = *x.oend;
+    }
+    buf_size = x.buf_size;
+    if (x.buf_size <= 0)
+      return *this;
+    buf = new char32_t[buf_size];
+    std::memcpy(buf, x.buf, buf_size * sizeof(char32_t));
+    return *this;
+  }
+  constexpr recons_itor &operator=(recons_itor &&x) noexcept {
+    del_buf();
+    s = x.s, old = x.old, oit = x.oit, oend = x.oend, buf = x.buf,
+    vernier = x.vernier, buf_size = x.buf_size;
+    return *this;
+  }
+  constexpr recons_itor(stru *s, stru *old /*owing*/) noexcept
+      : s(s), old(old), oit(this->old->begin()), oend(this->old->end()) {}
+  constexpr recons_itor(stru *s) noexcept : s(s), old(nullptr) {}
+  constexpr recons_itor &operator++();
+  constexpr recons_itor operator++(int);
+  constexpr char32_t &operator*();
+  constexpr char32_t operator&();
+  constexpr bool operator==(const recons_itor &x);
+  constexpr bool operator!=(const recons_itor &x);
+  constexpr bool operator>(const recons_itor &x);
+  constexpr bool operator<(const recons_itor &x);
+  constexpr bool operator>=(const recons_itor &x);
+  constexpr bool operator<=(const recons_itor &x);
+};
+
+auto stru::reconstruct() noexcept {
+  auto *old = new stru(u8"");
+  std::swap(*this, *old);
+  struct {
+    stru *x, *old;
+    recons_itor begin() const noexcept { return recons_itor(x, old); }
+    recons_itor end() const noexcept { return recons_itor(x); }
+  } ret{this, old};
+  return ret;
+}
+
+} // namespace nmsl
