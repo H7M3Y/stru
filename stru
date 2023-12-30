@@ -343,7 +343,10 @@ public:
       data.emplace(data_t{rec, buf, 0, rec.old.begin()});
     }
   }
-  constexpr ~itor() noexcept { asyn(); }
+  constexpr ~itor() noexcept {
+    if (!is_end_itor)
+      asyn();
+  }
 
 private:
   std::optional<std::reference_wrapper<const stru::recons>> is_end_itor;
