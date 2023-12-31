@@ -46,8 +46,8 @@ some_basic_ostream_of_char8_t << stru_instance ...;
 ```
 
 ### Format Conversion
-
-Template functions are provided to facilitate format conversion between UTF-8 and UTF-32 for arbitrary containers.
+- Template functions are provided to facilitate format conversion between UTF-8 and UTF-32 for arbitrary containers.
+- Support for big endian.
 ```cpp
 /**
  *  @param count Number of UTF-32 characters to be written
