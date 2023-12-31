@@ -1,5 +1,4 @@
 #pragma once
-#include <bit>
 #include <cstring>
 #include <optional>
 #include <ostream>
@@ -114,15 +113,6 @@ read_one_f(T &src, size_t ncast) {
   if (c & 0b01000000)                                                          \
     throw broken_utf8(ncast);                                                  \
   c &= 0b00111111
-constexpr int32_t endian_swap(int32_t x) noexcept {
-  return ((x & 0xFF) << 24) | (((x >> 8) & 0xFF) << 16) |
-         (((x >> 16) & 0xFF) << 8) | ((x >> 24) & 0xFF);
-}
-constexpr int32_t ensure_endian(int32_t x) noexcept {
-  if constexpr (std::endian::native == std::endian::big)
-    return endian_swap(x);
-  return x;
-}
 template <typename T, typename S>
 constexpr size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t u8_n = 0;
@@ -130,29 +120,28 @@ constexpr size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
     read_one(cur);
     ++u8_n;
     if (cur < 0b10000000) {
-      dst.push_back(ensure_endian(cur & 0b01111111));
+      dst.push_back(cur);
       continue;
     }
     char8_t sec = read_one_f(src, ncast);
     check10__(sec);
     ++u8_n;
     if (cur < 0b11100000) {
-      dst.push_back(ensure_endian((cur & 0b00011111) << 6 | sec));
+      dst.push_back((cur & 0b00011111) << 6 | sec);
       continue;
     }
     char8_t trd = read_one_f(src, ncast);
     check10__(trd);
     ++u8_n;
     if (cur < 0b11110000) {
-      dst.push_back(ensure_endian((cur & 0b00001111) << 12 | sec << 6 | trd));
+      dst.push_back((cur & 0b00001111) << 12 | sec << 6 | trd);
       continue;
     }
     char8_t fth = read_one_f(src, ncast);
     check10__(fth);
     ++u8_n;
     if (cur < 0b11111000) {
-      dst.push_back(
-          ensure_endian((cur & 0b00000111) << 18 | sec << 12 | trd << 6 | fth));
+      dst.push_back((cur & 0b00000111) << 18 | sec << 12 | trd << 6 | fth);
       continue;
     }
     throw broken_utf8(ncast);
@@ -164,7 +153,6 @@ constexpr size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t ret = 0;
   for (size_t ncast = 0; ncast != count; ++ncast) {
     read_one(cur);
-    cur = ensure_endian(cur);
     if (cur < 1 << 7) {
       dst.push_back(cur);
       ++ret;
