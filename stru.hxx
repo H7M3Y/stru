@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#define MAX_BUF_SIZE 64
+constexpr const auto MAX_BUF_SIZE = 64;
 
 namespace strulib {
 inline namespace {
@@ -96,11 +96,6 @@ constexpr size_t to_u8(I from, I end, S &container, size_t count = -1) {
   return to_u8(nextable_itor<I>{from, end}, container, count);
 }
 inline namespace {
-#define read_one(name)                                                         \
-  auto t = src.next();                                                         \
-  if (!t)                                                                      \
-    break;                                                                     \
-  auto name = *t
 template <typename T>
 inline std::remove_reference_t<decltype(*std::declval<T>().next())>
 read_one_f(T &src, size_t ncast) {
@@ -109,36 +104,41 @@ read_one_f(T &src, size_t ncast) {
     throw broken_utf8(ncast);
   return *t;
 }
-#define check10__(c)                                                           \
-  if (c & 0b01000000)                                                          \
-    throw broken_utf8(ncast);                                                  \
-  c &= 0b00111111
+inline auto check10__(auto &c, auto ncast) {
+  if (c & 0b01000000)
+    throw broken_utf8(ncast);
+  c &= 0b00111111;
+}
 template <typename T, typename S>
 constexpr size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t u8_n = 0;
   for (size_t ncast = 0; ncast != count; ++ncast) {
-    read_one(cur);
+    auto t = src.next();
+    if (!t) {
+      break;
+    }
+    auto cur = *t;
     ++u8_n;
     if (cur < 0b10000000) {
       dst.push_back(cur);
       continue;
     }
     char8_t sec = read_one_f(src, ncast);
-    check10__(sec);
+    check10__(sec, ncast);
     ++u8_n;
     if (cur < 0b11100000) {
       dst.push_back((cur & 0b00011111) << 6 | sec);
       continue;
     }
     char8_t trd = read_one_f(src, ncast);
-    check10__(trd);
+    check10__(trd, ncast);
     ++u8_n;
     if (cur < 0b11110000) {
       dst.push_back((cur & 0b00001111) << 12 | sec << 6 | trd);
       continue;
     }
     char8_t fth = read_one_f(src, ncast);
-    check10__(fth);
+    check10__(fth, ncast);
     ++u8_n;
     if (cur < 0b11111000) {
       dst.push_back((cur & 0b00000111) << 18 | sec << 12 | trd << 6 | fth);
@@ -152,7 +152,11 @@ template <typename T, typename S>
 constexpr size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t ret = 0;
   for (size_t ncast = 0; ncast != count; ++ncast) {
-    read_one(cur);
+    auto t = src.next();
+    if (!t) {
+      break;
+    }
+    auto cur = *t;
     if (cur < 1 << 7) {
       dst.push_back(cur);
       ++ret;
