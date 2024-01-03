@@ -28,26 +28,28 @@ struct nextable_itor {
 };
 } // namespace
 struct fatal_inner_error : std::exception {
-  const char *position;
-  const char *what() const noexcept override {
-    return "strulib: fatal inner error occurred at "s.append(position).c_str();
+  mutable std::string es;
+  const char *pos;
+  virtual const char *what() const noexcept override {
+    return ((es = "strulib: fatal inner error occurred at ") += pos).c_str();
   }
-  fatal_inner_error(const char *pos) : position(pos) {}
+  fatal_inner_error(const char *pos) {}
 };
-struct broken_format : std::exception {
-  size_t index;
-  broken_format(size_t index) noexcept : index(index) {}
-};
+struct broken_format : std::exception {};
 struct broken_utf8 : broken_format {
-  broken_utf8(size_t index) noexcept : broken_format(index) {}
-  const char *what() const noexcept override {
-    return "utf8 bad formatted at "s.append(std::to_string(index)).c_str();
+  mutable std::string es;
+  size_t index;
+  broken_utf8(size_t index) noexcept : index(index) {}
+  virtual const char *what() const noexcept override {
+    return ((es = "utf8 bad formatted at ") += std::to_string(index)).c_str();
   }
 };
 struct broken_utf32 : broken_format {
-  broken_utf32(size_t index) noexcept : broken_format(index) {}
-  const char *what() const noexcept override {
-    return "utf32 bad formatted at "s.append(std::to_string(index)).c_str();
+  mutable std::string es;
+  size_t index;
+  broken_utf32(size_t index) noexcept : index(index) {}
+  virtual const char *what() const noexcept override {
+    return ((es = "utf32 bad formatted at ") += std::to_string(index)).c_str();
   }
 };
 /**
@@ -60,7 +62,7 @@ template <typename I, typename S>
            requires(S s) {
              { s.push_back(std::declval<char32_t>()) };
            }
-constexpr size_t from_u8(I from, I end, S &container, size_t count = -1) {
+size_t from_u8(I from, I end, S &container, size_t count = -1) {
   return from_u8(nextable_itor<I>{from, end}, container, count);
 }
 template <typename T>
@@ -78,7 +80,7 @@ struct pointer_container_wrapper {
 template <typename I>
   requires std::forward_iterator<I> &&
            std::is_convertible_v<decltype(*std::declval<I>()), const char8_t>
-constexpr size_t from_u8(I from, I end, char32_t *dst, size_t len) {
+size_t from_u8(I from, I end, char32_t *dst, size_t len) {
   auto pcon = pointer_container_wrapper<char32_t>{dst};
   return from_u8(nextable_itor<I>{from, end}, pcon, len);
 }
@@ -92,7 +94,7 @@ template <typename I, typename S>
            requires(S s) {
              { s.push_back(std::declval<char8_t>()) };
            }
-constexpr size_t to_u8(I from, I end, S &container, size_t count = -1) {
+size_t to_u8(I from, I end, S &container, size_t count = -1) {
   return to_u8(nextable_itor<I>{from, end}, container, count);
 }
 inline namespace {
@@ -110,7 +112,7 @@ inline auto check10__(auto &c, auto ncast) {
   c &= 0b00111111;
 }
 template <typename T, typename S>
-constexpr size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
+size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t u8_n = 0;
   for (size_t ncast = 0; ncast != count; ++ncast) {
     auto t = src.next();
@@ -149,7 +151,7 @@ constexpr size_t from_u8(nextable_itor<T> src, S &dst, size_t count) {
   return u8_n;
 }
 template <typename T, typename S>
-constexpr size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
+size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
   size_t ret = 0;
   for (size_t ncast = 0; ncast != count; ++ncast) {
     auto t = src.next();
@@ -196,27 +198,63 @@ constexpr size_t to_u8(nextable_itor<T> src, S &dst, size_t count) {
 } // namespace
 struct stru {
   std::u8string s;
-  template <typename... Ts>
-  constexpr stru(Ts &&...args) : s(std::forward<Ts>(args)...) {}
-  constexpr operator std::u8string() const noexcept { return s; }
-  template <typename... Ts> constexpr stru &append(Ts &&...args) noexcept {
+  template <typename... Ts> stru(Ts &&...args) : s(std::forward<Ts>(args)...) {}
+  operator std::u8string() const noexcept { return s; }
+  template <typename... Ts> stru &append(Ts &&...args) noexcept {
     s.append(std::forward<Ts>(args)...);
     return *this;
   }
-  template <typename... Ts> constexpr stru &push_back(Ts &&...args) noexcept {
-    s.push_back(std::forward<Ts>(args)...);
+  stru &push_back(char8_t c) noexcept {
+    s.push_back(c);
+    return *this;
+  }
+  stru &push_back32(char32_t cur) {
+    if (cur < 1 << 7) {
+      push_back(cur);
+      return *this;
+    }
+    char8_t sec = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 5) {
+      push_back(0b11000000 | cur);
+      push_back(sec);
+      return *this;
+    }
+    char8_t trd = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 4) {
+      push_back(0b11100000 | cur);
+      push_back(trd);
+      push_back(sec);
+      return *this;
+    }
+    char8_t fth = 1 << 7 | (cur & 0b00111111);
+    cur >>= 6;
+    if (cur < 1 << 3) {
+      push_back(0b11110000 | cur);
+      push_back(fth);
+      push_back(trd);
+      push_back(sec);
+      return *this;
+    } else
+      throw broken_utf32(0);
     return *this;
   }
   class u8itor;
-  constexpr u8itor begin() const;
-  constexpr const u8itor end() const noexcept;
+  u8itor begin() const;
+  const u8itor end() const noexcept;
 
   class recons;
-  constexpr recons reconstruct();
+  recons reconstruct();
 };
+namespace string_literals {
 inline stru operator"" _s(const char8_t *str, size_t len) noexcept {
   return stru(str, len);
 }
+inline stru operator""_s(const char *str, size_t len) noexcept {
+  return stru(std::bit_cast<const char8_t *>(str), len);
+}
+} // namespace string_literals
 inline std::basic_ostream<char8_t> &&operator<<(std::basic_ostream<char8_t> &os,
                                                 const stru &str) noexcept {
   return std::move(os << str.s);
@@ -233,7 +271,7 @@ class stru::u8itor {
     decltype(source_str.begin()) source_itor;
   };
   std::optional<data_t> data;
-  constexpr u8itor(const std::u8string &s, bool is_end_itor) {
+  u8itor(const std::u8string &s, bool is_end_itor) {
     if (is_end_itor)
       end_itor.emplace(s);
     else {
@@ -243,46 +281,42 @@ class stru::u8itor {
       buffing();
     }
   }
-  constexpr void buffing() {
-    try {
-      data->buf.clear();
-      auto offset = from_u8(data->source_itor, data->source_str.cend(),
-                            data->buf, data->buf.capacity());
-      data->source_itor += offset;
-    } catch (broken_utf8 &e) {
-      e.index += data->source_itor - data->source_str.begin();
-      throw e;
-    }
+  void buffing() try {
+    data->buf.clear();
+    auto offset = from_u8(data->source_itor, data->source_str.cend(), data->buf,
+                          data->buf.capacity());
+    data->source_itor += offset;
+  } catch (broken_utf8 &e) {
+    e.index += data->source_itor - data->source_str.begin();
+    throw;
   }
 
 public:
-  static constexpr u8itor begin(const std::u8string &s) {
-    return u8itor(s, false);
-  }
-  static constexpr const u8itor end(const std::u8string &s) noexcept {
+  static u8itor begin(const std::u8string &s) { return u8itor(s, false); }
+  static const u8itor end(const std::u8string &s) noexcept {
     return u8itor(s, true);
   }
-  constexpr char32_t operator*() {
+  char32_t operator*() {
     while (data->vernier >= data->buf.size()) {
       data->vernier -= data->buf.size();
       buffing();
     }
     return data->buf[data->vernier];
   }
-  constexpr u8itor &operator++() noexcept {
+  u8itor &operator++() noexcept {
     ++data->vernier;
     return *this;
   }
-  constexpr u8itor operator++(int) noexcept {
+  u8itor operator++(int) noexcept {
     u8itor ret(*this);
     ++*this;
     return ret;
   }
-  constexpr u8itor &operator+=(size_t n) noexcept {
+  u8itor &operator+=(size_t n) noexcept {
     data->vernier += n;
     return *this;
   }
-  constexpr bool operator==(const u8itor &x) const noexcept {
+  bool operator==(const u8itor &x) const noexcept {
     if (x.end_itor)
       return &data->source_str == &x.end_itor->get() &&
              data->source_itor == data->source_str.end() &&
@@ -291,49 +325,43 @@ public:
       return data->source_itor == x.data->source_itor &&
              data->vernier == x.data->vernier;
   }
-  constexpr bool operator!=(const u8itor &x) const noexcept {
-    return !(*this == x);
-  }
+  bool operator!=(const u8itor &x) const noexcept { return !(*this == x); }
 };
-constexpr stru::u8itor stru::begin() const { return u8itor::begin(s); }
-constexpr const stru::u8itor stru::end() const noexcept {
-  return u8itor::end(s);
-}
+inline stru::u8itor stru::begin() const { return u8itor::begin(s); }
+inline const stru::u8itor stru::end() const noexcept { return u8itor::end(s); }
 class stru::recons {
   stru &old, cons;
 
 public:
   class itor;
-  constexpr recons(stru &x) noexcept : old(x), cons() {}
-  constexpr itor begin();
-  constexpr const itor end() noexcept;
-  constexpr ~recons() noexcept { std::swap(cons.s, old.s); }
+  recons(stru &x) noexcept : old(x), cons() {}
+  itor begin();
+  const itor end() noexcept;
+  ~recons() noexcept { std::swap(cons.s, old.s); }
 };
 class stru::recons::itor {
 public:
   class pseudo_pointer;
-  constexpr pseudo_pointer operator*();
-  constexpr itor &operator++() noexcept {
+  pseudo_pointer operator*();
+  itor &operator++() noexcept {
     ++data->vernier;
     ++data->old_itor;
     return *this;
   }
-  constexpr itor operator++(int) noexcept {
+  itor operator++(int) noexcept {
     itor t(*this);
     ++*this;
     return t;
   }
-  constexpr bool operator==(const itor &x) const noexcept {
+  bool operator==(const itor &x) const noexcept {
     if (x.is_end_itor)
       return &data->rec == &x.is_end_itor->get() &&
              data->old_itor == data->rec.old.end();
     else
       return data->old_itor == x.data->old_itor;
   }
-  constexpr bool operator!=(const itor &x) const noexcept {
-    return !(*this == x);
-  }
-  constexpr itor(recons &rec, bool is_enditor) {
+  bool operator!=(const itor &x) const noexcept { return !(*this == x); }
+  itor(recons &rec, bool is_enditor) {
     if (is_enditor)
       is_end_itor.emplace(rec);
     else {
@@ -343,7 +371,7 @@ public:
       data.emplace(data_t{rec, buf, 0, rec.old.begin()});
     }
   }
-  constexpr ~itor() noexcept {
+  ~itor() noexcept {
     if (!is_end_itor)
       asyn();
   }
@@ -357,13 +385,11 @@ private:
     decltype(rec.old.begin()) old_itor;
   };
   std::optional<data_t> data;
-  constexpr void asyn() {
-    try {
-      to_u8(data->buf.cbegin(), data->buf.cend(), data->rec.cons.s);
-      data->buf.clear();
-    } catch (broken_utf32 &e) {
-      fatal_inner_error(__func__);
-    }
+  void asyn() try {
+    to_u8(data->buf.cbegin(), data->buf.cend(), data->rec.cons.s);
+    data->buf.clear();
+  } catch (const broken_utf32 &e) {
+    throw fatal_inner_error(__func__);
   }
 };
 class stru::recons::itor::pseudo_pointer {
@@ -374,32 +400,30 @@ class stru::recons::itor::pseudo_pointer {
   std::vector<char32_t> &buf;
 
 public:
-  constexpr pseudo_pointer(char32_t &c, char32_t old_c, size_t &vernier,
-                           std::vector<char32_t> &buf)
+  pseudo_pointer(char32_t &c, char32_t old_c, size_t &vernier,
+                 std::vector<char32_t> &buf)
       : modified(false), c(c), old_c(old_c), vernier(vernier), buf(buf) {}
-  constexpr char32_t &operator*() noexcept {
+  char32_t &operator*() noexcept {
     modified = true;
     return c;
   }
-  constexpr char32_t operator&() noexcept { return old_c; }
-  constexpr ~pseudo_pointer() noexcept {
+  char32_t operator&() noexcept { return old_c; }
+  ~pseudo_pointer() noexcept {
     if (!modified)
       --vernier;
   }
-  constexpr pseudo_pointer &push_back(char32_t c) {
+  pseudo_pointer &push_back(char32_t c) {
     buf.push_back(c);
     ++vernier;
     return *this;
   }
 };
-constexpr stru::recons stru::reconstruct() { return recons(*this); }
-constexpr stru::recons::itor stru::recons::begin() {
-  return itor(*this, false);
-}
-constexpr const stru::recons::itor stru::recons::end() noexcept {
+inline stru::recons stru::reconstruct() { return recons(*this); }
+inline stru::recons::itor stru::recons::begin() { return itor(*this, false); }
+inline const stru::recons::itor stru::recons::end() noexcept {
   return itor(*this, true);
 }
-constexpr stru::recons::itor::pseudo_pointer stru::recons::itor::operator*() {
+inline stru::recons::itor::pseudo_pointer stru::recons::itor::operator*() {
   if (data->vernier >= data->buf.capacity()) {
     data->vernier = 0;
     asyn();
