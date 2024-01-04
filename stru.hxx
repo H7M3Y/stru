@@ -1,5 +1,6 @@
 #pragma once
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -28,28 +29,37 @@ struct nextable_itor {
 };
 } // namespace
 struct fatal_inner_error : std::exception {
-  mutable std::string es;
   const char *pos;
+  mutable std::vector<std::string> r;
+  mutable std::mutex m;
   virtual const char *what() const noexcept override {
-    return ((es = "strulib: fatal inner error occurred at ") += pos).c_str();
+    std::lock_guard<std::mutex> lock(m);
+    r.emplace_back("strulib: fatal inner error occurred at ");
+    return (r.back() += pos).c_str();
   }
   fatal_inner_error(const char *pos) {}
 };
 struct broken_format : std::exception {};
 struct broken_utf8 : broken_format {
-  mutable std::string es;
   size_t index;
+  mutable std::vector<std::string> r;
+  mutable std::mutex m;
   broken_utf8(size_t index) noexcept : index(index) {}
   virtual const char *what() const noexcept override {
-    return ((es = "utf8 bad formatted at ") += std::to_string(index)).c_str();
+    std::lock_guard<std::mutex> lock(m);
+    r.emplace_back("utf8 bad formatted at ");
+    return (r.back() += std::to_string(index)).c_str();
   }
 };
 struct broken_utf32 : broken_format {
-  mutable std::string es;
   size_t index;
+  mutable std::vector<std::string> r;
+  mutable std::mutex m;
   broken_utf32(size_t index) noexcept : index(index) {}
   virtual const char *what() const noexcept override {
-    return ((es = "utf32 bad formatted at ") += std::to_string(index)).c_str();
+    std::lock_guard<std::mutex> lock(m);
+    r.emplace_back("utf32 bad formatted at ");
+    return (r.back() += std::to_string(index)).c_str();
   }
 };
 /**
