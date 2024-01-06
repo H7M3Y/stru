@@ -37,7 +37,7 @@ struct fatal_inner_error : std::exception {
     r.emplace_back("strulib: fatal inner error occurred at ");
     return (r.back() += pos).c_str();
   }
-  fatal_inner_error(const char *pos) {}
+  fatal_inner_error(const char *pos) : pos(pos) {}
 };
 struct broken_format : std::exception {};
 struct broken_utf8 : broken_format {
